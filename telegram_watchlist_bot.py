@@ -5,13 +5,15 @@ import os
 import re
 import subprocess
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import requests
 
 WATCHLIST_PATH = Path("watchlist.json")
 STATE_PATH = Path(".telegram_bot_state.json")
 MAX_SECURITIES = 10
+NAVER_SECURITY_SEARCH_URL = "https://ac.stock.naver.com/ac"
+SecuritySearch = Callable[[str], list[dict[str, str]]]
 
 
 def load_json(path: Path, default: Any) -> Any:
@@ -29,14 +31,56 @@ def save_json(path: Path, value: Any) -> None:
 def help_message() -> str:
     return (
         "종가 알림 종목 관리 방법\n"
-        "• 추가 005930 삼성전자\n"
-        "• 삭제 005930\n"
+        "• 추가 삼성전자\n"
+        "• 삭제 삼성전자\n"
         "• 목록\n\n"
-        "종목코드와 종목명을 함께 보내 주세요. 다음 종가 알림부터 반영됩니다."
+        "종목명만 보내면 코드를 확인해 처리합니다. 다음 종가 알림부터 반영됩니다."
     )
 
 
-def process_command(text: str, watchlist: list[dict[str, str]]) -> tuple[str, bool]:
+def _normalized_name(value: str) -> str:
+    return re.sub(r"\s+", "", value).casefold()
+
+
+def search_securities_by_name(
+    session: requests.Session, query: str
+) -> list[dict[str, str]]:
+    response = session.get(
+        NAVER_SECURITY_SEARCH_URL,
+        params={"q": query, "target": "stock"},
+        headers={"User-Agent": "stock-price-telegram-bot/1.0"},
+        timeout=15,
+    )
+    response.raise_for_status()
+    response.encoding = "utf-8"
+    payload = response.json()
+    candidates: list[dict[str, str]] = []
+    for item in payload.get("items") or []:
+        code = str(item.get("code", "")).strip().upper()
+        name = str(item.get("name", "")).strip()
+        if (
+            item.get("nationCode") == "KOR"
+            and item.get("category") == "stock"
+            and re.fullmatch(r"[0-9A-Z]{6}", code)
+            and name
+        ):
+            candidates.append({"code": code, "name": name})
+    return candidates
+
+
+def _candidate_reply(query: str, candidates: list[dict[str, str]]) -> str:
+    if not candidates:
+        return f"국내 상장 종목을 찾지 못했습니다: {query}"
+    lines = [f"정확히 일치하는 종목이 없습니다: {query}", "아래 이름 중 하나를 그대로 보내 주세요."]
+    lines.extend(f"• 추가 {item['name']}" for item in candidates[:5])
+    return "\n".join(lines)
+
+
+def process_command(
+    text: str,
+    watchlist: list[dict[str, str]],
+    security_search: SecuritySearch | None = None,
+) -> tuple[str, bool]:
     text = re.sub(r"^/", "", text.strip())
     parts = text.split(maxsplit=2)
     if not parts:
@@ -54,11 +98,27 @@ def process_command(text: str, watchlist: list[dict[str, str]]) -> tuple[str, bo
         return help_message(), False
 
     if command in {"추가", "add"}:
-        if len(parts) < 3:
-            return "형식: 추가 005930 삼성전자", False
-        code, name = parts[1].upper(), parts[2].strip()
-        if not re.fullmatch(r"[0-9A-Z]{6}", code) or not name:
-            return "종목코드는 영문·숫자 6자리로 입력해 주세요.", False
+        if len(parts) < 2:
+            return "형식: 추가 삼성전자", False
+        first_argument = parts[1].upper()
+        if re.fullmatch(r"[0-9A-Z]{6}", first_argument) and len(parts) >= 3:
+            code, name = first_argument, parts[2].strip()
+        else:
+            query = " ".join(parts[1:]).strip()
+            if security_search is None:
+                return "종목 이름 검색을 사용할 수 없습니다. 잠시 후 다시 시도해 주세요.", False
+            try:
+                candidates = security_search(query)
+            except (requests.RequestException, ValueError, TypeError):
+                return "종목 검색이 잠시 원활하지 않습니다. 잠시 후 다시 시도해 주세요.", False
+            exact = [
+                item
+                for item in candidates
+                if _normalized_name(item["name"]) == _normalized_name(query)
+            ]
+            if len(exact) != 1:
+                return _candidate_reply(query, exact or candidates), False
+            code, name = exact[0]["code"], exact[0]["name"]
         existing = next((item for item in watchlist if item["code"] == code), None)
         if existing:
             if existing["name"] == name:
@@ -72,13 +132,25 @@ def process_command(text: str, watchlist: list[dict[str, str]]) -> tuple[str, bo
 
     if command in {"삭제", "제거", "remove", "delete"}:
         if len(parts) < 2:
-            return "형식: 삭제 005930", False
-        code = parts[1].upper()
-        existing = next((item for item in watchlist if item["code"] == code), None)
+            return "형식: 삭제 삼성전자", False
+        query = " ".join(parts[1:]).strip()
+        if re.fullmatch(r"[0-9A-Z]{6}", query.upper()):
+            matches = [item for item in watchlist if item["code"] == query.upper()]
+        else:
+            matches = [
+                item
+                for item in watchlist
+                if _normalized_name(item["name"]) == _normalized_name(query)
+            ]
+        if len(matches) > 1:
+            lines = ["같은 이름의 종목이 여러 개입니다. 종목코드로 삭제해 주세요."]
+            lines.extend(f"• 삭제 {item['code']} ({item['name']})" for item in matches)
+            return "\n".join(lines), False
+        existing = matches[0] if matches else None
         if not existing:
-            return f"등록되지 않은 종목입니다: {code}", False
+            return f"등록되지 않은 종목입니다: {query}", False
         watchlist.remove(existing)
-        return f"삭제했습니다: {existing['name']} ({code})", True
+        return f"삭제했습니다: {existing['name']} ({existing['code']})", True
 
     return help_message(), False
 
@@ -128,7 +200,11 @@ def main() -> int:
         text = message.get("text")
         if chat_id != authorized_chat or not isinstance(text, str):
             continue
-        reply, changed = process_command(text, watchlist)
+        reply, changed = process_command(
+            text,
+            watchlist,
+            security_search=lambda query: search_securities_by_name(session, query),
+        )
         if changed:
             save_json(WATCHLIST_PATH, watchlist)
             watchlist_changed = True
