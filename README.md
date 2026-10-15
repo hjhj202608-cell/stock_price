@@ -69,6 +69,10 @@ cron-job.org 콘솔의 **Settings → API keys**에서 API Key를 하나 만듭�
 
 키 값은 코드나 채팅에 붙여 넣지 마세요. GitHub Secret 입력 화면에 직접 넣는 것이 안전합니다.
 
+텔레그램 연결만 빠르게 확인하려면 Actions에서 `Telegram connection diagnostic`
+워크플로를 수동 실행합니다. 이 진단은 메시지를 보내지 않고 봇 토큰과 대상 채팅
+접근 권한만 확인합니다.
+
 ## 보안상 알아둘 점
 
 - 장기 보관 장소는 GitHub Secrets뿐입니다.
