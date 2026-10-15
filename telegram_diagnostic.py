@@ -24,6 +24,24 @@ def _telegram_get(method: str, **params: str) -> dict:
     return payload
 
 
+def _telegram_post(method: str, **payload_data: str) -> dict:
+    token = os.environ["TELEGRAM_BOT_TOKEN"]
+    response = requests.post(
+        f"https://api.telegram.org/bot{token}/{method}",
+        json=payload_data,
+        timeout=15,
+    )
+    try:
+        payload = response.json()
+    except ValueError:
+        payload = {"ok": False, "description": "Telegram returned a non-JSON response"}
+
+    if not response.ok or not payload.get("ok"):
+        description = payload.get("description", f"HTTP {response.status_code}")
+        raise RuntimeError(f"{method}: {description}")
+    return payload
+
+
 def main() -> int:
     try:
         bot = _telegram_get("getMe")["result"]
@@ -57,6 +75,14 @@ def main() -> int:
                 raise RuntimeError(
                     "the bot is not allowed to post messages in this channel"
                 )
+
+        if os.environ.get("SEND_TEST_MESSAGE", "false").lower() == "true":
+            _telegram_post(
+                "sendMessage",
+                chat_id=chat_id,
+                text="✅ 주식 종가 알림 연결 테스트 성공",
+            )
+            print("Telegram test message: sent")
         return 0
     except Exception as exc:
         print(f"Telegram diagnostic failed: {exc}", file=sys.stderr)

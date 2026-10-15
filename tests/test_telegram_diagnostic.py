@@ -30,6 +30,36 @@ def test_diagnostic_checks_bot_and_chat(monkeypatch, capsys):
     assert "t e s t _ b o t" in capsys.readouterr().out
 
 
+def test_diagnostic_can_send_opt_in_test_message(monkeypatch, capsys):
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "1234")
+    monkeypatch.setenv("SEND_TEST_MESSAGE", "true")
+    responses = iter(
+        [
+            FakeResponse(
+                {"ok": True, "result": {"id": 9999, "username": "test_bot"}}
+            ),
+            FakeResponse(
+                {"ok": True, "result": {"id": 1234, "type": "private"}}
+            ),
+        ]
+    )
+    posts = []
+    monkeypatch.setattr(diagnostic.requests, "get", lambda *args, **kwargs: next(responses))
+    monkeypatch.setattr(
+        diagnostic.requests,
+        "post",
+        lambda *args, **kwargs: posts.append(kwargs["json"])
+        or FakeResponse({"ok": True, "result": {"message_id": 1}}),
+    )
+
+    assert diagnostic.main() == 0
+    assert posts == [
+        {"chat_id": "1234", "text": "✅ 주식 종가 알림 연결 테스트 성공"}
+    ]
+    assert "test message: sent" in capsys.readouterr().out
+
+
 def test_diagnostic_rejects_bot_own_id(monkeypatch, capsys):
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
     monkeypatch.setenv("TELEGRAM_CHAT_ID", "9999")
