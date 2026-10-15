@@ -11,7 +11,7 @@ class FakeResponse:
         return self._payload
 
 
-def test_diagnostic_checks_bot_and_chat(monkeypatch):
+def test_diagnostic_checks_bot_and_chat(monkeypatch, capsys):
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
     monkeypatch.setenv("TELEGRAM_CHAT_ID", "1234")
     responses = iter(
@@ -27,6 +27,7 @@ def test_diagnostic_checks_bot_and_chat(monkeypatch):
     monkeypatch.setattr(diagnostic.requests, "get", lambda *args, **kwargs: next(responses))
 
     assert diagnostic.main() == 0
+    assert "t e s t _ b o t" in capsys.readouterr().out
 
 
 def test_diagnostic_rejects_bot_own_id(monkeypatch, capsys):

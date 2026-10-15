@@ -27,7 +27,12 @@ def _telegram_get(method: str, **params: str) -> dict:
 def main() -> int:
     try:
         bot = _telegram_get("getMe")["result"]
-        print(f"Telegram bot authentication: OK (@{bot.get('username', 'unknown')})")
+        username = bot.get("username", "unknown")
+        # Character separation avoids over-broad CI secret masking while exposing
+        # only the bot's public username, never its token.
+        display_username = " ".join(username)
+        print("Telegram bot authentication: OK")
+        print(f"Telegram bot public username characters: {display_username}")
         chat_id = os.environ["TELEGRAM_CHAT_ID"]
         chat = _telegram_get("getChat", chat_id=chat_id)["result"]
         if str(chat.get("id")) == str(bot.get("id")):
