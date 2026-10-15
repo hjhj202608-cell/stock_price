@@ -1,0 +1,33 @@
+name: KRX 15:30 close alert
+
+on:
+  repository_dispatch:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: krx-close-alert
+  cancel-in-progress: false
+
+jobs:
+  notify:
+    # 키움은 등록된 IP에서만 인증하므로 고정 공인 IP의 self-hosted runner를 사용합니다.
+    runs-on: [self-hosted, linux, x64, kiwoom]
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Send verified KRX close prices
+        env:
+          KIWOOM_APP_KEY: ${{ secrets.KIWOOM_APP_KEY }}
+          KIWOOM_APP_SECRET: ${{ secrets.KIWOOM_APP_SECRET }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python stock_close_alert.py
