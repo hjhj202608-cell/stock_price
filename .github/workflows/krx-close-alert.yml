@@ -20,7 +20,7 @@ jobs:
   notify:
     # 키움 요청만 고정 IP인 cron-job.org 임시 작업을 통해 중계합니다.
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

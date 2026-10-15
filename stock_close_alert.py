@@ -10,6 +10,7 @@ import time as time_module
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, time, timedelta, timezone
+from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -42,11 +43,43 @@ class RelayResult:
     body: str
 
 
-SECURITIES = (
+@dataclass(frozen=True)
+class CloseQuote:
+    close: int
+    previous_close: int | None
+
+    @property
+    def change_percent(self) -> float | None:
+        if not self.previous_close:
+            return None
+        return (self.close - self.previous_close) / self.previous_close * 100
+
+
+DEFAULT_SECURITIES = (
     Security("0048J0", "KODEX 미국머니마켓액티브"),
     Security("0046A0", "TIGER 미국초단기(3개월이하)국채"),
     Security("329750", "TIGER 미국달러단기채권액티브"),
 )
+
+
+def load_securities(path: str | Path | None = None) -> tuple[Security, ...]:
+    watchlist_path = Path(path or os.environ.get("WATCHLIST_PATH", "watchlist.json"))
+    if not watchlist_path.exists():
+        return DEFAULT_SECURITIES
+    payload = json.loads(watchlist_path.read_text(encoding="utf-8"))
+    if not isinstance(payload, list):
+        raise ValueError("watchlist.json은 배열이어야 합니다")
+    securities: list[Security] = []
+    seen: set[str] = set()
+    for item in payload:
+        code = str(item.get("code", "")).strip().upper()
+        name = str(item.get("name", "")).strip()
+        if not re.fullmatch(r"[0-9A-Z]{6}", code) or not name:
+            raise ValueError("watchlist.json에 잘못된 종목이 있습니다")
+        if code not in seen:
+            securities.append(Security(code, name))
+            seen.add(code)
+    return tuple(securities)
 
 
 def is_krx_session(now: datetime) -> bool:
@@ -279,23 +312,46 @@ def issue_token_via_relay(cron: CronJobClient) -> tuple[str, int]:
         raise
 
 
-def _extract_today_close(payload: dict[str, Any], today: str) -> int:
+def _extract_close_quote(payload: dict[str, Any], today: str) -> CloseQuote:
     if payload.get("return_code") not in (None, 0, "0"):
         raise RuntimeError(payload.get("return_msg", "키움 종가 조회 실패"))
     rows = payload.get("daly_stkpc")
     if not isinstance(rows, list):
         raise LookupError("키움 응답에 일별주가 목록이 없습니다")
-    row = next((item for item in rows if str(item.get("date", "")) == today), None)
+    dated_rows = sorted(
+        (item for item in rows if str(item.get("date", "")).isdigit()),
+        key=lambda item: str(item.get("date", "")),
+        reverse=True,
+    )
+    row = next((item for item in dated_rows if str(item.get("date", "")) == today), None)
     if row is None:
         raise LookupError("키움 응답에 오늘 날짜의 종가가 없습니다")
-    return _normalize_price(row.get("close_pric"))
+    previous = next(
+        (item for item in dated_rows if str(item.get("date", "")) < today), None
+    )
+    return CloseQuote(
+        close=_normalize_price(row.get("close_pric")),
+        previous_close=(
+            _normalize_price(previous.get("close_pric")) if previous is not None else None
+        ),
+    )
+
+
+def _extract_today_close(payload: dict[str, Any], today: str) -> int:
+    """하위 호환용: 검증된 당일 종가만 반환합니다."""
+    return _extract_close_quote(payload, today).close
 
 
 def fetch_close_prices_via_relay(
-    cron: CronJobClient, job_id: int, token: str, now: datetime
-) -> dict[str, int | None]:
-    prices: dict[str, int | None] = {item.code: None for item in SECURITIES}
-    for security in SECURITIES:
+    cron: CronJobClient,
+    job_id: int,
+    token: str,
+    now: datetime,
+    securities: tuple[Security, ...] | None = None,
+) -> dict[str, CloseQuote | None]:
+    securities = securities if securities is not None else load_securities()
+    prices: dict[str, CloseQuote | None] = {item.code: None for item in securities}
+    for security in securities:
         try:
             run_at = _next_relay_minute()
             cron.update_post_job(
@@ -318,7 +374,7 @@ def fetch_close_prices_via_relay(
             if result.http_status != 200:
                 raise RuntimeError(f"키움 시세 HTTP 오류: {result.http_status}")
             payload = json.loads(result.body)
-            prices[security.code] = _extract_today_close(
+            prices[security.code] = _extract_close_quote(
                 payload, now.strftime("%Y%m%d")
             )
         except Exception:
@@ -327,12 +383,25 @@ def fetch_close_prices_via_relay(
 
 
 def build_message(
-    now: datetime, prices: dict[str, int | None], warning: str | None = None
+    now: datetime,
+    prices: dict[str, CloseQuote | int | None],
+    warning: str | None = None,
+    securities: tuple[Security, ...] | None = None,
 ) -> str:
+    securities = securities if securities is not None else load_securities()
     lines = [f"[KRX 종가] {now:%Y-%m-%d} 15:30"]
-    for security in SECURITIES:
-        price = prices.get(security.code)
-        rendered = f"{price:,}원" if price is not None else "확인불가"
+    if not securities:
+        lines.append("• 등록된 종목이 없습니다")
+    for security in securities:
+        quote = prices.get(security.code)
+        if isinstance(quote, CloseQuote):
+            rate = quote.change_percent
+            rate_text = f"{rate:+.2f}%" if rate is not None else "등락률 확인불가"
+            rendered = f"{quote.close:,}원 ({rate_text})"
+        elif isinstance(quote, int):
+            rendered = f"{quote:,}원"
+        else:
+            rendered = "확인불가"
         lines.append(f"• {security.name} ({security.code}): {rendered}")
     if warning:
         lines.extend(("", f"⚠️ {warning}"))
@@ -383,19 +452,22 @@ def main(now: datetime | None = None) -> int:
         logging.info("KRX 휴장일이므로 전송하지 않습니다: %s", now.date())
         return 0
 
+    securities = load_securities()
     session = requests.Session()
-    empty = {item.code: None for item in SECURITIES}
+    empty = {item.code: None for item in securities}
     cron: CronJobClient | None = None
     relay_job_id: int | None = None
     try:
         verify_cron_executor_ips(session)
         cron = CronJobClient(session, os.environ["CRONJOB_API_KEY"])
         token, relay_job_id = issue_token_via_relay(cron)
-        prices = fetch_close_prices_via_relay(cron, relay_job_id, token, now)
-        message = build_message(now, prices)
+        prices = fetch_close_prices_via_relay(
+            cron, relay_job_id, token, now, securities
+        )
+        message = build_message(now, prices, securities=securities)
     except Exception as exc:
         logging.exception("무료 중계 조회 실패")
-        message = build_message(now, empty, str(exc))
+        message = build_message(now, empty, str(exc), securities)
     finally:
         if cron is not None and relay_job_id is not None:
             try:

@@ -17,6 +17,20 @@ def test_message_renders_price_and_unavailable():
     assert "12,345원" in message
 
 
+def test_message_renders_change_percent():
+    message = app.build_message(
+        datetime(2026, 10, 15, 15, 35, tzinfo=KST),
+        {
+            "0048J0": app.CloseQuote(13_410, 13_390),
+            "0046A0": app.CloseQuote(9_330, 9_340),
+            "329750": app.CloseQuote(12_755, None),
+        },
+    )
+    assert "13,410원 (+0.15%)" in message
+    assert "9,330원 (-0.11%)" in message
+    assert "12,755원 (등락률 확인불가)" in message
+
+
 def test_message_can_include_warning():
     message = app.build_message(
         datetime(2026, 10, 15, 15, 35, tzinfo=KST), {}, "IP 목록 변경"
@@ -83,7 +97,25 @@ def test_fetch_prices_reuses_one_job_and_sends_required_fields(monkeypatch):
     assert cron.job_ids == [777, 777, 777]
     assert all(body["qry_dt"] == "20261015" for body in cron.bodies)
     assert all(body["indc_tp"] == "0" for body in cron.bodies)
-    assert prices == {"0048J0": 101, "0046A0": 202, "329750": 303}
+    assert prices == {
+        "0048J0": app.CloseQuote(101, None),
+        "0046A0": app.CloseQuote(202, None),
+        "329750": app.CloseQuote(303, None),
+    }
+
+
+def test_extract_close_quote_uses_previous_trading_row():
+    payload = {
+        "daly_stkpc": [
+            {"date": "20261015", "close_pric": "10,100"},
+            {"date": "20261014", "close_pric": "10,000"},
+            {"date": "20261013", "close_pric": "9,900"},
+        ],
+        "return_code": 0,
+    }
+    assert app._extract_close_quote(payload, "20261015") == app.CloseQuote(
+        10_100, 10_000
+    )
 
 
 def test_extract_ipv4s_accepts_unknown_json_shape():
