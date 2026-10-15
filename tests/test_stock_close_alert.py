@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 import stock_close_alert as app
@@ -17,13 +17,85 @@ def test_message_renders_price_and_unavailable():
     assert "12,345원" in message
 
 
-def test_parse_execution_time_supports_full_timestamp():
-    stamp = app._parse_execution_time("20261015153000", "20261015")
-    assert stamp == datetime(2026, 10, 15, 15, 30, tzinfo=KST)
+def test_message_can_include_warning():
+    message = app.build_message(
+        datetime(2026, 10, 15, 15, 35, tzinfo=KST), {}, "IP 목록 변경"
+    )
+    assert "⚠️ IP 목록 변경" in message
 
 
 def test_price_normalization_removes_api_sign():
     assert app._normalize_price("-12,345") == 12_345
+
+
+def test_extract_today_close_uses_official_daily_list_shape():
+    payload = {
+        "daly_stkpc": [
+            {"date": "20261014", "close_pric": "-10,000"},
+            {"date": "20261015", "close_pric": "+12,345"},
+        ],
+        "return_code": 0,
+    }
+    assert app._extract_today_close(payload, "20261015") == 12_345
+
+
+def test_extract_today_close_rejects_wrong_date():
+    payload = {
+        "daly_stkpc": [{"date": "20261014", "close_pric": "10,000"}],
+        "return_code": 0,
+    }
+    try:
+        app._extract_today_close(payload, "20261015")
+    except LookupError:
+        pass
+    else:
+        raise AssertionError("오늘 날짜가 없으면 가격을 인정하면 안 됩니다")
+
+
+def test_fetch_prices_reuses_one_job_and_sends_required_fields(monkeypatch):
+    class FakeCron:
+        def __init__(self):
+            self.bodies = []
+            self.job_ids = []
+
+        def update_post_job(self, job_id, **kwargs):
+            self.job_ids.append(job_id)
+            self.bodies.append(kwargs["body"])
+
+        def wait_result(self, job_id, run_at):
+            code = self.bodies[-1]["stk_cd"]
+            return app.RelayResult(
+                200,
+                '{"daly_stkpc":[{"date":"20261015","close_pric":"%s"}],'
+                '"return_code":0}' % {"0048J0": 101, "0046A0": 202, "329750": 303}[code],
+            )
+
+    monkeypatch.setattr(
+        app,
+        "_next_relay_minute",
+        lambda: datetime(2026, 10, 15, 6, 37, tzinfo=timezone.utc),
+    )
+    cron = FakeCron()
+    prices = app.fetch_close_prices_via_relay(
+        cron, 777, "token", datetime(2026, 10, 15, 15, 35, tzinfo=KST)
+    )
+
+    assert cron.job_ids == [777, 777, 777]
+    assert all(body["qry_dt"] == "20261015" for body in cron.bodies)
+    assert all(body["indc_tp"] == "0" for body in cron.bodies)
+    assert prices == {"0048J0": 101, "0046A0": 202, "329750": 303}
+
+
+def test_extract_ipv4s_accepts_unknown_json_shape():
+    payload = {"nodes": [{"address": "116.203.134.67"}, "91.99.23.109"]}
+    assert app._extract_ipv4s(payload) == {"116.203.134.67", "91.99.23.109"}
+
+
+def test_next_relay_minute_has_safe_lead_time():
+    now = datetime(2026, 10, 15, 6, 35, 58, tzinfo=timezone.utc)
+    assert app._next_relay_minute(now) == datetime(
+        2026, 10, 15, 6, 37, tzinfo=timezone.utc
+    )
 
 
 def test_krx_session_gate():
