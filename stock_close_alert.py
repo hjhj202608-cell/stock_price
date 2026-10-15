@@ -345,9 +345,14 @@ def send_telegram(session: requests.Session, message: str) -> None:
         json={"chat_id": os.environ["TELEGRAM_CHAT_ID"], "text": message},
         timeout=15,
     )
-    response.raise_for_status()
-    if not response.json().get("ok"):
-        raise RuntimeError("텔레그램 API가 실패를 반환했습니다")
+    try:
+        payload = response.json()
+    except ValueError:
+        payload = {"ok": False, "description": "Telegram returned a non-JSON response"}
+
+    if not response.ok or not payload.get("ok"):
+        description = payload.get("description", f"HTTP {response.status_code}")
+        raise RuntimeError(f"텔레그램 전송 실패: {description}")
 
 
 def main(now: datetime | None = None) -> int:

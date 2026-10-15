@@ -28,8 +28,30 @@ def main() -> int:
     try:
         bot = _telegram_get("getMe")["result"]
         print(f"Telegram bot authentication: OK (@{bot.get('username', 'unknown')})")
-        _telegram_get("getChat", chat_id=os.environ["TELEGRAM_CHAT_ID"])
-        print("Telegram destination chat access: OK")
+        chat_id = os.environ["TELEGRAM_CHAT_ID"]
+        chat = _telegram_get("getChat", chat_id=chat_id)["result"]
+        if str(chat.get("id")) == str(bot.get("id")):
+            raise RuntimeError(
+                "TELEGRAM_CHAT_ID points to the bot itself; use the user's chat ID"
+            )
+
+        chat_type = chat.get("type", "unknown")
+        print(f"Telegram destination chat access: OK (type={chat_type})")
+
+        if chat_type in {"group", "supergroup", "channel"}:
+            member = _telegram_get(
+                "getChatMember", chat_id=chat_id, user_id=str(bot["id"])
+            )["result"]
+            status = member.get("status", "unknown")
+            can_post = member.get("can_post_messages")
+            print(
+                "Telegram bot membership: "
+                f"status={status}, can_post_messages={can_post}"
+            )
+            if chat_type == "channel" and can_post is not True:
+                raise RuntimeError(
+                    "the bot is not allowed to post messages in this channel"
+                )
         return 0
     except Exception as exc:
         print(f"Telegram diagnostic failed: {exc}", file=sys.stderr)

@@ -16,13 +16,61 @@ def test_diagnostic_checks_bot_and_chat(monkeypatch):
     monkeypatch.setenv("TELEGRAM_CHAT_ID", "1234")
     responses = iter(
         [
-            FakeResponse({"ok": True, "result": {"username": "test_bot"}}),
-            FakeResponse({"ok": True, "result": {"id": 1234}}),
+            FakeResponse(
+                {"ok": True, "result": {"id": 9999, "username": "test_bot"}}
+            ),
+            FakeResponse(
+                {"ok": True, "result": {"id": 1234, "type": "private"}}
+            ),
         ]
     )
     monkeypatch.setattr(diagnostic.requests, "get", lambda *args, **kwargs: next(responses))
 
     assert diagnostic.main() == 0
+
+
+def test_diagnostic_rejects_bot_own_id(monkeypatch, capsys):
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "9999")
+    responses = iter(
+        [
+            FakeResponse(
+                {"ok": True, "result": {"id": 9999, "username": "test_bot"}}
+            ),
+            FakeResponse(
+                {"ok": True, "result": {"id": 9999, "type": "private"}}
+            ),
+        ]
+    )
+    monkeypatch.setattr(diagnostic.requests, "get", lambda *args, **kwargs: next(responses))
+
+    assert diagnostic.main() == 1
+    assert "bot itself" in capsys.readouterr().err
+
+
+def test_diagnostic_rejects_channel_without_post_permission(monkeypatch, capsys):
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "-1001234")
+    responses = iter(
+        [
+            FakeResponse(
+                {"ok": True, "result": {"id": 9999, "username": "test_bot"}}
+            ),
+            FakeResponse(
+                {"ok": True, "result": {"id": -1001234, "type": "channel"}}
+            ),
+            FakeResponse(
+                {
+                    "ok": True,
+                    "result": {"status": "administrator", "can_post_messages": False},
+                }
+            ),
+        ]
+    )
+    monkeypatch.setattr(diagnostic.requests, "get", lambda *args, **kwargs: next(responses))
+
+    assert diagnostic.main() == 1
+    assert "not allowed to post" in capsys.readouterr().err
 
 
 def test_diagnostic_reports_telegram_description(monkeypatch, capsys):

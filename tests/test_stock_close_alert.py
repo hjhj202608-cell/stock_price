@@ -101,3 +101,31 @@ def test_next_relay_minute_has_safe_lead_time():
 def test_krx_session_gate():
     assert app.is_krx_session(datetime(2026, 10, 15, 15, 35, tzinfo=KST))
     assert not app.is_krx_session(datetime(2026, 10, 3, 15, 35, tzinfo=KST))
+
+
+def test_send_telegram_reports_api_description(monkeypatch):
+    class FakeResponse:
+        ok = False
+        status_code = 403
+
+        @staticmethod
+        def json():
+            return {
+                "ok": False,
+                "description": "Forbidden: bot can't send messages to bots",
+            }
+
+    class FakeSession:
+        @staticmethod
+        def post(*args, **kwargs):
+            return FakeResponse()
+
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "9999")
+
+    try:
+        app.send_telegram(FakeSession(), "test")
+    except RuntimeError as exc:
+        assert "bot can't send messages to bots" in str(exc)
+    else:
+        raise AssertionError("Telegram API 오류를 예외로 전달해야 합니다")
