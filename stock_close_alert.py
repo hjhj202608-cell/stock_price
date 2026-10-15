@@ -355,6 +355,25 @@ def send_telegram(session: requests.Session, message: str) -> None:
         raise RuntimeError(f"텔레그램 전송 실패: {description}")
 
 
+def requested_target_now(actual_now: datetime | None = None) -> datetime | None:
+    raw = os.environ.get("TARGET_DATE", "").strip()
+    if not raw:
+        return None
+
+    try:
+        target_date = datetime.strptime(raw, "%Y-%m-%d").date()
+    except ValueError as exc:
+        raise ValueError("TARGET_DATE는 YYYY-MM-DD 형식이어야 합니다") from exc
+
+    actual_now = (actual_now or datetime.now(KST)).astimezone(KST)
+    if target_date > actual_now.date() or (
+        target_date == actual_now.date() and actual_now.time() < RUN_NOT_BEFORE
+    ):
+        raise ValueError("아직 확정되지 않은 미래 종가는 발송할 수 없습니다")
+
+    return datetime.combine(target_date, RUN_NOT_BEFORE, tzinfo=KST)
+
+
 def main(now: datetime | None = None) -> int:
     now = (now or datetime.now(KST)).astimezone(KST)
     if now.time() < RUN_NOT_BEFORE:
@@ -392,7 +411,7 @@ def main(now: datetime | None = None) -> int:
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     try:
-        sys.exit(main())
+        sys.exit(main(requested_target_now()))
     except Exception:
         logging.exception("알림 작업 실패")
         sys.exit(1)

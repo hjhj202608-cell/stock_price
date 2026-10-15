@@ -129,3 +129,24 @@ def test_send_telegram_reports_api_description(monkeypatch):
         assert "bot can't send messages to bots" in str(exc)
     else:
         raise AssertionError("Telegram API 오류를 예외로 전달해야 합니다")
+
+
+def test_requested_target_now_accepts_completed_historical_date(monkeypatch):
+    monkeypatch.setenv("TARGET_DATE", "2026-10-15")
+    actual = datetime(2026, 10, 16, 0, 5, tzinfo=KST)
+
+    requested = app.requested_target_now(actual)
+
+    assert requested == datetime(2026, 10, 15, 15, 35, tzinfo=KST)
+
+
+def test_requested_target_now_rejects_today_before_close(monkeypatch):
+    monkeypatch.setenv("TARGET_DATE", "2026-10-16")
+    actual = datetime(2026, 10, 16, 9, 0, tzinfo=KST)
+
+    try:
+        app.requested_target_now(actual)
+    except ValueError as exc:
+        assert "미래 종가" in str(exc)
+    else:
+        raise AssertionError("장 마감 전 당일 종가는 허용하면 안 됩니다")

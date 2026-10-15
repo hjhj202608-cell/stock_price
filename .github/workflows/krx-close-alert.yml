@@ -3,6 +3,11 @@ name: KRX 15:30 close alert
 on:
   repository_dispatch:
   workflow_dispatch:
+    inputs:
+      target_date:
+        description: Optional historical KRX date to send (YYYY-MM-DD)
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -31,4 +36,5 @@ jobs:
           KIWOOM_APP_SECRET: ${{ secrets.KIWOOM_APP_SECRET }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TARGET_DATE: ${{ inputs.target_date }}
         run: python stock_close_alert.py
