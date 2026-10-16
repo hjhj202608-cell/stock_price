@@ -1,8 +1,6 @@
 name: Telegram watchlist bot
 
 on:
-  schedule:
-    - cron: "*/5 * * * *"
   repository_dispatch:
     types: [telegram_watchlist_commands]
   workflow_dispatch:

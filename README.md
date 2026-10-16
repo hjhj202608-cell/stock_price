@@ -23,7 +23,7 @@
 - 비슷한 이름이 여러 개 검색되면 봇이 후보를 알려 줍니다. 기존 `추가 005930 삼성전자`, `삭제 005930` 형식도 계속 사용할 수 있습니다.
 - 같은 코드를 다시 추가하면 중복 등록되지 않습니다.
 - 최대 10개까지 등록할 수 있습니다. 키움 조회가 고정 IP 중계를 거쳐 순차 실행되므로 종목이 많을수록 알림이 늦어질 수 있습니다.
-- 명령은 GitHub Actions가 주기적으로 확인하므로 답장이 오기까지 보통 몇 분 걸릴 수 있습니다.
+- 명령은 Cloudflare Worker 웹훅이 즉시 처리하므로 보통 수초 안에 답장이 옵니다.
 - 변경 사항은 `watchlist.json`에 저장되어 다음 종가 알림부터 사용됩니다.
 - 등록된 개인 채팅에서 보낸 명령만 처리하고, 다른 사용자의 메시지는 무시합니다.
 
@@ -33,7 +33,7 @@ PC를 계속 켜 두지 않아도 됩니다.
 
 1. 기존 cron-job.org 작업이 15:35 KST에 GitHub Actions의 `repository_dispatch`를 호출합니다.
 2. GitHub 무료 호스팅 실행기가 거래일 여부를 판단합니다.
-3. 텔레그램 종목 관리 작업은 GitHub에서 5분마다 실행되며 PC를 켜 둘 필요가 없습니다.
+3. 텔레그램 종목 관리 명령은 무료 Cloudflare Worker 웹훅이 즉시 처리합니다. 기존 GitHub 종목 관리 작업은 장애 시 수동 실행용으로만 남겨 둡니다.
 4. 키움은 허용된 IP에서만 호출할 수 있으므로, GitHub가 cron-job.org에 몇 분짜리 임시 조회 작업 하나를 만듭니다.
 5. 그 작업 하나를 차례로 갱신해 같은 실행 노드에서 키움 토큰과 `ka10086` 일별주가를 조회하고 당일·전 거래일 종가를 비교합니다. 키움의 토큰 발급 IP와 조회 IP가 같아야 하는 제약을 지키기 위한 방식입니다.
 6. GitHub가 결과의 날짜·가격·등락률을 검증한 뒤 텔레그램을 보내고 임시 작업과 실행 기록을 삭제합니다.
@@ -84,7 +84,7 @@ cron-job.org 콘솔의 **Settings → API keys**에서 API Key를 하나 만듭�
 | `CRONJOB_API_KEY` | cron-job.org에서 만든 API Key |
 | `KIWOOM_APP_KEY` | 키움 REST API App Key |
 | `KIWOOM_APP_SECRET` | 키움 REST API Secret Key |
-| `TELEGRAM_BOT_TOKEN` | 텔레그램 봇 토큰 |
+| `TELEGRAM_BOT_TOKEN` | `@stock_price2026_bot`의 텔레그램 봇 토큰 |
 | `TELEGRAM_CHAT_ID` | 메시지를 받을 채팅 ID |
 
 키 값은 코드나 채팅에 붙여 넣지 마세요. GitHub Secret 입력 화면에 직접 넣는 것이 안전합니다.
@@ -93,9 +93,23 @@ cron-job.org 콘솔의 **Settings → API keys**에서 API Key를 하나 만듭�
 워크플로를 수동 실행합니다. 이 진단은 메시지를 보내지 않고 봇 토큰과 대상 채팅
 접근 권한만 확인합니다.
 
+## 5. 즉시 답장용 Cloudflare Worker
+
+`cloudflare/telegram-webhook.js`를 배포한 Worker에는 다음 값을 **암호화된 Secret**으로만 저장합니다.
+
+| 이름 | 값 |
+|---|---|
+| `GITHUB_TOKEN` | 이 저장소의 Contents 읽기·쓰기만 허용한 fine-grained token |
+| `TELEGRAM_BOT_TOKEN` | `@stock_price2026_bot`의 텔레그램 봇 토큰 |
+| `TELEGRAM_CHAT_ID` | 명령을 허용할 개인 채팅 ID |
+| `WEBHOOK_SECRET` | Telegram 웹훅 요청 검증용 임의의 긴 값 |
+
+Worker는 등록된 개인 채팅의 요청만 처리하고, `WEBHOOK_SECRET`이 일치하지 않는 요청은 거부합니다. GitHub의 5분 주기 실행은 사용하지 않으며 `.github/workflows/telegram-watchlist-bot.yml`의 수동 실행은 비상용으로 유지합니다.
+
 ## 보안상 알아둘 점
 
-- 장기 보관 장소는 GitHub Secrets뿐입니다.
+- 키움 App Key·Secret과 cron-job.org API Key는 GitHub Secrets에만 보관합니다.
+- 즉시 답장에 필요한 텔레그램 토큰, 허용 채팅 ID, 제한된 GitHub 토큰, 웹훅 검증값은 Cloudflare의 암호화된 Secrets에 보관합니다.
 - 실행 중 App Key와 Secret은 HTTPS로 cron-job.org의 임시 작업 설정에 전달됩니다.
 - 임시 작업은 결과 수집 직후 삭제되며, 각 실행 예약은 실행되지 못해도 5분 후 만료되도록 설정됩니다.
 - cron-job.org는 기존 작업을 보통 다른 노드로 옮기지 않는다고 안내하지만 이를 영구 보장하지는 않습니다. 실행 중 노드가 바뀌어 키움이 거부하면 그날 가격은 `확인불가`로 전송됩니다.
